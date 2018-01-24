@@ -1,0 +1,8 @@
+# Python bytecode files
+*.pyc
+__pycache__
+
+# Ignore output from pip
+build
+sdist
+*.egg-info
