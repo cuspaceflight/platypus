@@ -5,6 +5,9 @@ __pycache__
 # Ignore output from pip
 build
 sdist
+*.egg-info
+
+#Ignore output from tox
 .coverage
 .tox
-*.egg-info
+.cache

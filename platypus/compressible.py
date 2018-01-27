@@ -77,7 +77,7 @@ def calcWorkingVariables(state,gamma,R):
     T = p/(state[0]*R)
     H = (state[2]+p)/state[0]
     
-    return [u,p,T,H]
+    return np.array([u,p,T,H])
 
 def calculateFlux(state,wv):
     """Calculates the flux.
