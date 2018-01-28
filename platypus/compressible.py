@@ -70,14 +70,15 @@ def calcWorkingVariables(state,gamma,R):
         R: the gas constant for the gas
         
     Returns:
-        [u,p,T,H] a list of the flow velocity, pressure, temperature and enthalpy.
+        ([u,p,T,H],maxChicSpeed) a list of the flow velocity, pressure, temperature and enthalpy along with the maximum characteristic speed
     """
     u = state[1]/state[0] # u = rho*u/rho
     p = (state[2]-0.5*state[1]*u)*(gamma-1.)
     T = p/(state[0]*R)
     H = (state[2]+p)/state[0]
     
-    return np.array([u,p,T,H])
+    maxChicSpeed = max(abs(u+math.sqrt(gamma*R*T)),abs(u-math.sqrt(gamma*R*T)))
+    return (np.array([u,p,T,H]),maxChicSpeed)
 
 def calculateFlux(state,wv):
     """Calculates the flux.
@@ -162,4 +163,186 @@ def calculateRoeFlux(state1,wv1,state2,wv2,gamma):
 
     return 0.5*( flux1 + flux2 - calculateSignAFlux(UAvg,math.sqrt(a2Avg),HAvg,flux2,flux1,gamma))
 
+def reflectionFlux(state,wv):
+    """Calculates flux for a reflective wall.
+    
+    Args:
+        state : state in the cell adjacent to the wall
+        wv : working variables in the cell adjacent to the wall
+    Returns:
+        flux (np.array) : the flux for the reflection boundary conditon
+    """
+    return np.array([0.,wv[1],0.])
+
+class FiniteVolumeSolver1D:
+    def __init__(self,cellCentres,areas,states,workingVariables,gasProp,
+                 wvFunc = calcWorkingVariables, intercellFluxFunc = calculateRoeFlux,
+                 inletFluxFunc = reflectionFlux, outletFluxFunc = reflectionFlux, 
+                 source = None, updateFunc = None):
+        """Sets up a finite volume solver for a quasi-1D flow geometry.
+        
+        Args:
+            cellCentres (np.array): x-location of the cell centres. The cells are assumed to be equispaced.
+            areas (np.array): Area at the cell centre. The area is assumed to vary quadratically (i.e linear scaling of a length scale) between cells
+            states (np.array): Initial states at each cell centre
+            gasProp [gamma,R]: gas properties
+            workingVariables (np.array): Array to store the working variables of each cell
+            wvFunc : function to use to calculate any working variables (default: u,p,T,h)
+            intercellFluxFunc : function to use to calculate fluxes between cells (default: approximate Roe fluxes)
+            inletFluxFunc: function to use to calculate inlet fluxes (default : reflective bc)
+            outletFluxFunc : function to use to calculate outlet fluxes (default : reflective bc)
+            source: function to calculate internal source terms
+            updateFunc : function to perform any additional calculations add the end of the solve
+        """
+        
+        self.cellCentres        = cellCentres
+        self.areas              = areas
+        self.states             = states
+        self.workingVariables   = workingVariables
+        self.stateUpdates       = np.zeros(states.shape)
+        self.intercellFluxes    = np.zeros((states.shape[0],states.shape[1]+1))
+        
+        self.gamma  = gasProp[0]
+        self.R      = gasProp[1]
+        
+        #Functions
+        self.wvFunc = wvFunc
+        self.flux   = intercellFluxFunc
+        self.iFlux  = inletFluxFunc
+        self.oFlux  = outletFluxFunc
+        
+        if source == None:
+            #We define a blank source
+            def zeroSource(state,wv,vol,index):
+                return np.zeros(wv.shape[0])
+            self.source = zeroSource
+        else:
+            self.source = source
+        
+        self.updateFunc = updateFunc
+        
+        self.cellWidth  = cellCentres[1]-cellCentres[0]
+        self.nCells     = cellCentres.shape[0]
+        
+    def calcMidArea(self,area1,area2):
+        """Calculates the area at the midpoint between two cells.
+        
+        It is assumed that the underlying length scale (e.g. radius) varies linearly
+        and so the area varies quadratically.
+        
+        Args:
+            area1 (float): area of cell 1
+            area2 (float): area of cell 2
+        Returns:
+            Area at midpoint
+        """
+        mid     = 0.25*(area1 + area2 + 2.*math.sqrt(area1*area2))
+        
+        return mid
+    
+    def calcVolume(self,area1,area2,dist):
+        """Calculates the volume between two given planes.
+        
+        Calculates the volume between the surfaces of given areas with a set distance
+        between them. The area is assumed to vary quadratically.
+        
+        Args:
+            area1 (float): first area
+            area2 (float): second area
+            dist (float): distance between the two surfaces
+        """
+        
+        factor = (math.sqrt(area2)-math.sqrt(area1))/dist
+        
+        vol = (1./(3.*factor))*(area2**1.5 - area1**1.5)
+        
+        return vol
+        
+    def timestep(self,CFL,deltaT):
+        """Performs a single timestep.
+        
+        Args:
+            CFL (float) : the maximum CFL number to use
+            deltaT : the desired timestep to use
+        Returns:
+            The actual timestep used
+        """
+        cw = self.cellWidth
+        maxChicSpeed = 0.
+        
+        for i in range(self.nCells):
+            #We iterate through the cells and compute the working variables
+            (wv,chic) = self.wvFunc(self.states[:,i],self.gamma,self.R)
+            
+            self.workingVariables[:,i] = wv
+            
+            if i == 0:
+                self.intercellFluxes[:,i] = self.iFlux(self.states[:,i],wv)
+            else:
+                self.intercellFluxes[:,i] = self.flux(self.states[:,i-1],self.workingVariables[:,i-1],
+                                                      self.states[:,i  ],wv,self.gamma)
+                
+            maxChicSpeed = max(maxChicSpeed,chic)
+        #We compute the exit flux
+        self.intercellFluxes[:,self.nCells] = self.oFlux(self.states[:,self.nCells-1],
+                                                         self.workingVariables[:,self.nCells-1])
+        
+        #Working variables have been computed so we calculate the delta t using the maximum max characteristic speed
+        CFL = deltaT*maxChicSpeed/cellWidth
+        
+        deltaT = min(deltaT,CFL*self.cellWidth/maxChicSpeed)
+        
+        #We now compute the fluxes
+        for i in range(self.nCells):
+            
+            if i != self.nCells-1:
+                ARhs    = self.calcMidArea(self.areas[i],self.areas[i+1]) #We calculate the area of the flux plane on the right hand side
+                volRhs  = self.calcVolume(self.areas[i],ARhs,0.5*cw)
+            else:
+                ARhs    = areas[i]
+                volRhs  = 0.5*cw*areas[i]
+            
+            if i != 0:
+                ALhs    = self.calcMidArea(self.areas[i-1],self.areas[i]) 
+                volLhs  = self.calcVolume(ALhs,self.areas[i],0.5*cw)
+            else:
+                ALhs    = areas[i]
+                volLhs  = 0.5*cw*areas[i]
+                
+            vol = volLhs + volRhs   #We construct the volume
+            source = self.source(self.states[:,i],self.workingVariables[:,i],vol,i) # We apply any source term
+            
+            self.stateUpdates[:,i]  = (1./vol)*( ALhs*self.intercellFluxes[:,i]     #We calculate the state update
+                                                -ARhs*self.intercellFluxes[:,i+1]
+                                                +source)
+            
+        self.states += self.stateUpdates*deltaT
+        
+        #We call an update function
+        
+        self.update(self)   #This allows the update function to do whatever it wants 
+        
+        return deltaT
+            
+            
+            
+                
+                
+            
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
     
