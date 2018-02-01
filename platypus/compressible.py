@@ -37,11 +37,11 @@ def getGasProperties(gasIdent):
         gasIdent (str): A string identifying the gas.
         
     Returns:
-        [cp, gamma]
+        [gamma,R]
     """
     
     if gasIdent == 'air':
-        return [1005,1.4]
+        return [1.4,287]
     elif gasIdent == 'N2O':
         return [880,1.27]
     
@@ -67,7 +67,7 @@ def calcStagnPRatio(gamma,M):
     """
     return (1+0.5*(gamma-1)*M*M)**(-gamma/(gamma-1))
 
-def calcLimitMassFlow(gamma):
+def calcChokeMassFlow(gamma):
     """Calcuates the limiting non-dimensional mass flux for a given gamma.
     
     Args: 
@@ -77,6 +77,106 @@ def calcLimitMassFlow(gamma):
     """
     return (gamma/math.sqrt(gamma-1.))*(1+0.5*(gamma-1))**(-0.5*(gamma+1.)/(gamma-1))
 
+def getMachFromStaticPRel(gamma,staticPRel,guessM = 0.5):
+    """Calculates the mach number using the static pressure relation: mDot*sqrt(cp*T0)/(A*p)
+    
+    TODO: this could be incorporated into a single larger function that looks up
+    Mach number from a variety of different relations
+    
+    Args:
+        gamma (float): ratio of specific heats for the gas
+        staticPRel (float): mDot*sqrt(cp*T0)/(A*p) that we want to find out
+        guessM ( optional): guess Mach number for the solution
+    Returns:
+        The Mach number corresponding to this quantity
+    """
+    
+    def resid(M):
+        return gamma*M*math.sqrt(1.+0.5*(gamma-1.)*M*M)/(math.sqrt(gamma-1.))
+    
+    def jacob(M):
+        fac = gamma/math.sqrt(gamma-1.)
+        
+        return fac*( math.sqrt(1.+0.5*(gamma-1.)*M*M)  + 0.5*(gamma-1.)*M*M/math.sqrt(1.+0.5*(gamma-1.)*M*M))
+    
+    tol = 1e-10
+    while abs(resid(guessM)-staticPRel) > tol:
+        guessM += (staticPRel-resid(guessM))/jacob(guessM)
+    return guessM
+
+def getMachFromStagnPRatio(gamma,stagnPRatio,subsonic):
+    """Calculates the mach number using the dimensionloess mach flux based on p0: mDot*sqrt(cp*T0)/(A*p0)
+    
+    TODO: this could be incorporated into a single larger function  that looks up Mach number from a
+    variety of different relations.
+    
+    Args:
+        gamma (float): ratio of specific heats
+        stagnPRatio : mDot*sqrt(cp*T0)/(A*p0)
+        subsonic (bool): True if we want to look at the subsonic branch
+    """
+    
+    if subsonic:
+        guessM = 0.5
+    else:
+        guessM = 1.5
+        
+    def resid(M):
+        return (gamma/math.sqrt(gamma-1.))*M*(1.+0.5*(gamma-1.)*M*M)**(-0.5*((gamma+1.)/(gamma-1.)))
+    def jacob(M):
+        fac = gamma/(math.sqrt(gamma-1.))
+        
+        return fac*( (1.+0.5*(gamma-1.)*M*M)**(-0.5*((gamma+1.)/(gamma-1.))) -M*0.5*((gamma+1.)/(gamma-1.))*(gamma-1.)*M*(1.+0.5*(gamma-1.)*M*M)**(-0.5*((gamma+1.)/(gamma-1.))-1))
+    
+    
+    tol = 1e-10
+    while abs(resid(guessM)-stagnPRatio) > tol:
+        delta = (stagnPRatio-resid(guessM))/jacob(guessM)
+        
+        #We check we don't move into the wrong branch
+        if subsonic:
+            while (delta+guessM)> 1.:
+                delta*=0.9
+        else:
+            while (delta+guessM)<1.:
+                delta*=0.9
+        guessM += delta
+    return guessM
+        
+def getNormalShockMachFromStagnPRatio(gamma,stagnPRatio,guessM=1.5):
+    """Calculates the Mach number of a normal shock using the stagnation pressure ratio across the shock.
+    
+    TODO: this could be incorporated into a singler larger function that looks up
+    shock strengths from a variety of different relations.
+    
+    Args:
+        gamma (float) : ratio of specific heats for the gas
+        stagnPRatio : the ratio of stagnation pressures p_{0s}/p_0
+        guessM (optional): the guess of the shock strength
+    Returns:
+        The Mach number corresponding to this quantity
+    """
+    
+    lhs = lambda(M2): ((0.5*(gamma+1.)*M2)/(1+0.5*(gamma-1.)*M2))**(gamma/(gamma-1.))
+    rhs = lambda(M2): (2.*(gamma/(gamma+1.))*M2 - (gamma-1.)/(gamma+1.))**(1./(1.-gamma))
+    def resid(M):
+        M2 = M*M
+        
+        return lhs(M2)*rhs(M2)
+    
+    def jacob(M):
+        M2 = M*M
+
+        dLhs = ((gamma/(gamma-1))*(((0.5*(gamma+1.)*M2)/(1+0.5*(gamma-1.)*M2))**(gamma/(gamma-1.)-1.))*
+                                  ((gamma+1.)*M*(1.+0.5*(gamma-1.)*M2) - (gamma-1.)*M*0.5*(gamma+1.)*M2)/((1.+0.5*(gamma-1.)*M2)**2.))
+        dRhs = (1./(1.-gamma)*((2.*(gamma/(gamma+1.))*M2 - (gamma-1.)/(gamma+1.))**(1./(1.-gamma)-1.))*(4.*gamma*M/(gamma+1.)))
+        
+        return dLhs*rhs(M2) + dRhs*lhs(M2)
+    tol = 1e-10
+    while abs(resid(guessM)-stagnPRatio) > tol:
+        guessM += (stagnPRatio-resid(guessM))/jacob(guessM)
+    return guessM 
+            
 def calcWorkingVariables(state,gamma,R):
     """Calculates the 'working variables' required by a 1D finite volume solver.
     
@@ -195,6 +295,74 @@ def reflectionFlux(state,wv):
     """
     return np.array([0.,wv[1],0.])
 
+def stagnFlux(state,wv,gamma,R,pStag,TStag,relaxation):
+    """Calculates the flux based on it coming from a source of constant stagnation pressure and 
+    temperature.
+    
+    Args:
+        state: state in cell adjacent to the source
+        wv: working variables in the cell adjacent to the source
+        gamma: ratio of specific heats
+        R: gas constant
+        pStag: stagnation pressure in the source
+        TStag: stagnation temperature in the source
+        relaxation: a relaxation factor for the inlet density
+    Returns: 
+        flux coming from the constant stagnation pressure and temperature source
+    """
+    #We calculate rhoStag
+    rhoStag = pStag/(R*TStag)
+    
+    #We get the new inlet density based on the relaxation factor
+    rhoInlet = (1.-relaxation)*stagnFlux.rhoInlet + relaxation*state[0]
+    
+    #We perform a correction if this exceeds that stagnation density
+    if rhoInlet > 0.999*rhoStag:
+        rhoInlet = 0.999*rhoStag
+    
+    #We update for the relaxation next timestep
+    stagnFlux.rhoInlet = rhoInlet
+    
+    
+    #We get the stagnation enthalpy
+    
+    r = rhoInlet/rhoStag
+    
+    M = math.sqrt( (r**(-(gamma-1.))-1.)*2./(gamma-1.))
+    
+    p = calcStagnPRatio(gamma,M)*pStag
+    T = calcStagnTempRatio(gamma,M)*TStag
+    u = M*math.sqrt(gamma*R*T)
+
+    sourceState = np.array([rhoInlet,rhoInlet*u,p/(gamma-1.) + 0.5*rhoInlet*u*u])
+    
+    wvSource = np.array([u,p,None,None])
+    
+    return calculateFlux(sourceState,wvSource)
+
+def exhaustFlux(state,wv,gamma,R,pStatic):
+    """Calculates the flux leaving an exhaust.
+    
+    Args:
+        state: state in cell adjacent to the exhuast.
+        wv: working variables in cell adjacent to the exhaust
+        gamma: ratio of specific heats
+        R: gas cosntant
+        pStatic: static pressure of the exhaust
+        
+    Returns:
+        flux leaving the exhaust
+    """
+    #We first need to work out the speed of sound in the cell adjacent to the exhaust and the corresponding Mach number
+    a = math.sqrt(gamma*R*wv[2])
+    if wv[0] > a:
+        #Exhaust is supersonic. The problem is hyperbolic so no flux change has to occur
+        return calculateFlux(state,wv)
+    #we have a subsonic exhaust, the flux is changed via a modification of the pressure term
+    wv[1] = pStatic
+    
+    return calculateFlux(state,wv)
+    
 class FiniteVolumeSolver1D:
     def __init__(self,cellCentres,areas,states,workingVariables,gasProp,
                  wvFunc = calcWorkingVariables, intercellFluxFunc = calculateRoeFlux,
@@ -334,6 +502,7 @@ class FiniteVolumeSolver1D:
             
             self.stateUpdates[:,i]  = (1./vol)*( ALhs*self.intercellFluxes[:,i]     #We calculate the state update
                                                 -ARhs*self.intercellFluxes[:,i+1]
+                                                +(ARhs-ALhs)*np.array([0.,self.workingVariables[1,i],0.])
                                                 +source)
             
         self.states += self.stateUpdates*deltaT
