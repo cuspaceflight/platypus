@@ -16,8 +16,8 @@ def test_1dRelations():
     """We test the 1D compressible relations to those results found in the CUED flow tables"""
     
     #Dimensionless mass fluxes at choking
-    assert tolerance(c.calcLimitMassFlow(1.4),1.281,1e-4)
-    assert tolerance(c.calcLimitMassFlow(1.333),1.3468,1e-4)
+    assert tolerance(c.calcChokeMassFlow(1.4),1.281,1e-4)
+    assert tolerance(c.calcChokeMassFlow(1.333),1.3468,1e-4)
     
     #Stagnation temperature and pressure ratios
     assert tolerance(c.calcStagnTempRatio(1.333,0.3),0.9852,1e-4)
@@ -26,6 +26,22 @@ def test_1dRelations():
     assert tolerance(c.calcStagnPRatio(1.333,1.21),0.4176,1e-4)
     assert tolerance(c.calcStagnPRatio(1.4,0.86),0.6170,1e-4)
     
+    #Calculating Mach numbers from the static pressure non dimensional mass flwo
+    assert tolerance(c.getMachFromStaticPRel(1.4,1.3996),0.610,1e-3) #Subsonic
+    assert tolerance(c.getMachFromStaticPRel(1.4,3.2015),1.260,1e-3) #Supersonic
+    
+    #Calculating shock strengths from stagnation pressure ratios
+    assert tolerance(c.getNormalShockMachFromStagnPRatio(1.4,0.9871),1.250,1e-3)
+    assert tolerance(c.getNormalShockMachFromStagnPRatio(1.4,0.7442),1.950,1e-3)
+    assert tolerance(c.getNormalShockMachFromStagnPRatio(1.4,0.4062),2.750,1e-3)
+    
+    #Calculating Mach numbers from stagnation pressure non dimensional mass flow
+    assert tolerance(c.getMachFromStagnPRatio(1.4,0.2200,True),0.100,1e-3) #Subsonic
+    assert tolerance(c.getMachFromStagnPRatio(1.4,1.1280,True),0.650,1e-3) #Subsonic
+    assert tolerance(c.getMachFromStagnPRatio(1.333,0.5569,True),0.25,1e-3)#Subsonic
+    assert tolerance(c.getMachFromStagnPRatio(1.4,1.1763,False),1.350,1e-3)   #Supersonic
+    assert tolerance(c.getMachFromStagnPRatio(1.4,0.5581,False),2.350,1e-3)   #Supersonic
+    assert tolerance(c.getMachFromStagnPRatio(1.333,1.2325,False),1.350,1e-3) #Supersonic
 def test_fluxes():
     """Tests flux computations and calculation of working variables from the state"""
     #We define two test cases for different flow states
@@ -148,10 +164,7 @@ def test_solver_shockTube():
         xExpansionL = 0.5 - t*aL    #Location of the 'first' ch'ic to leave the discontinuity at t=0
         xExpansionR = 0.5 +(U2-a2)*t#Location of the 'last'  ch'ic to leave the discontinuity at t=0 
         
-        print(xShock)
-        print(xContact)
-        print(xExpansionL)
-        print(xExpansionR)
+
         #we can now work out the analytic state
         for i in range(nCells):
             xLoc = cellCentres[i]
@@ -233,4 +246,179 @@ def test_solver_shockTube():
     assert cumRhoError  < tol
     assert cumMomError  < tol
     assert cumEnError   < tol
+    
+    
+def test_solver_nozzle():
+    """
+    Tests the solver by modelling an isentropic nozzle, with a shock in the exit
+    
+    We use the case where the gas is air, p0=140kPa and pAmb = 100kPa. At = 0.5 Ae.
+    The nozzle is conical.
+    
+    This results in a flow with a shock in the nozzle. The Mach number at shock = 1.84
+    and the shock is located 48.1% of the way along the nozzle.
+    
+    
+    The chamber has A=Ae. The reduction  starts at x=xRed with the throat beginning at x=xT.
+    The expansion starts at x=xE. the back pressure plane is at xB -> we need at least two cells
+    here to prevent pressure oscillations
+    """
+    
+    #We set up the system
+    pAtm    = 100e3
+    p0      = 140e3
+    T0      = 298
+    TAtm    = 298
+    
+    L       = 1.0
+    xRed    = 0.3
+    xT      = 0.5
+    xE      = 0.6
+    xB      = 0.97
+    
+    At      = 0.5
+    Ae      = 1.
+    
+    nCells  = 200
+    
+    cw     = 1./nCells  #Cell width
+    cellCentres     = np.linspace(cw/2.,L-cw/2.,nCells)    #Calculate cell centres
+    cellAreas       = np.zeros(nCells)
+    states          = np.zeros([3,nCells])
+    wv              = np.zeros([4,nCells])
+    
+    [gamma,R]       = c.getGasProperties('air')
+    
+    
+            
+    
+    for i in range(nCells):
+        #We set up the areas and the states
+        rho  = pAtm/(R*TAtm)
+        p    = pAtm
+        
+        states[0,i] = rho
+        states[1,i] = 0.
+        states[2,i] = p/(gamma-1.)
+        
+        xLoc = cellCentres[i]
+        
+        #We calculate the area
+        if xLoc < xRed:
+            #In the chamber with constant area
+            A = Ae
+        elif xLoc < xT:
+            A = (math.sqrt(Ae) + (math.sqrt(At)-math.sqrt(Ae))*(xLoc-xRed)/(xT-xRed))**2.
+        elif xLoc < xE:
+            A = At
+        elif xLoc<xB:
+            A = (math.sqrt(At) + (math.sqrt(Ae)-math.sqrt(At))*(xLoc-xE)/(L-xE))**2.
+        else:
+            A = Ae
+        
+        cellAreas[i] = A
+    
+    #We now set up the inlet fluxes and outlet fluxes
+    inletFlux = c.stagnFlux
+    inletFlux.rhoInlet = pAtm/(R*TAtm)
+    
+    inFlux  = lambda state,wv: inletFlux(state,wv,gamma,R,p0,T0,0.25)
+    
+    outletFlux = lambda state,wv: c.exhaustFlux(state,wv,gamma,R,pAtm)
+    
+    solver = c.FiniteVolumeSolver1D(cellCentres,cellAreas,states,wv,[gamma,R],
+                                    inletFluxFunc = inFlux, outletFluxFunc = outletFlux)
+    
+    def calcAnalyticalSolution():
+        soln = np.zeros([3,nCells])
+        #We first of all calculate the mass flow rate through the nozzle
+        nonDimMass = c.calcChokeMassFlow(1.4)
+        cp = R/(1.-1./gamma)
+        mDot = nonDimMass*At*p0/math.sqrt(cp*T0)
+        
+        #Get exit Mach number
+        Me  = c.getMachFromStaticPRel(gamma,mDot*math.sqrt(cp*T0)/(Ae*pAtm))
+        
+        #Get exit stagnation pressure
+        p0e = pAtm/c.calcStagnPRatio(gamma,Me)
+        
+        #Get required shock strength
+        Ms  = c.getNormalShockMachFromStagnPRatio(gamma,p0e/p0)
+    
+        
+        #Now that we know the shock strength we are set to calculate everythin else
+
+        for i in range(nCells):
+            xLoc = cellCentres[i]
+            A    = cellAreas[i]
+            
+            if xLoc<xT:
+                #Mach nyumber is subsonic
+                M = c.getMachFromStagnPRatio(gamma,mDot*math.sqrt(cp*T0)/(A*p0),True)
+                
+                stagnP = p0
+            elif xLoc <= xE:
+                #In the throat
+                M = 1.
+                stagnP = p0
+            else:
+                #In the nozzle, have to check for shock
+                M = c.getMachFromStagnPRatio(gamma,mDot*math.sqrt(cp*T0)/(A*p0),False)
+                
+                if M > Ms:
+                    M = c.getMachFromStagnPRatio(gamma,mDot*math.sqrt(cp*T0)/(A*p0e),True)
+                    
+                    stagnP = p0e
+                else:
+                    stagnP = p0
+            
+            #We now get the temperature
+            
+            T = c.calcStagnTempRatio(gamma,M)*T0
+            p = c.calcStagnPRatio(gamma,M)*stagnP
+            
+            rho = p/(R*T)
+            a   = math.sqrt(gamma*R*T)
+            
+            u   = M*a
+            
+            soln[0,i] = rho
+            soln[1,i] = rho*u
+            soln[2,i] = p/(gamma-1.) + 0.5*rho*u*u
+            
+        return soln
+    analyticSolution = calcAnalyticalSolution()
+    #we time march to 0.02 sec (roughly time required for the steady solution to set up and the wave dynamics to die away
+    t       = 0.
+    targT   = 0.02
+    
+    while t < targT:
+        deltaT = targT-t
+        deltaT = solver.timestep(0.5,deltaT)
+        t+= deltaT
+        
+        
+    #We now compare to the analytical solution and get the error
+    cumRhoError = 0.
+    cumMomError = 0.
+    cumEnError  = 0.
+    
+
+    for i in range(nCells):
+        xLoc = cellCentres[i]
+
+        errRho = abs(states[0,i]-analyticSolution[0,i])/abs(analyticSolution[0,i])
+        errMom = abs(states[1,i]-analyticSolution[1,i])/abs(analyticSolution[1,i]) #We can't normalise as velocity goes to zero in somer regions
+        errEn  = abs(states[2,i]-analyticSolution[2,i])/abs(analyticSolution[2,i])
+        
+        cumRhoError += errRho*cw
+        cumMomError += errMom*cw
+        cumEnError  += errEn *cw
+
+    tol = 2e-2 #A 2% error is targeted. It is harder to achieve much more as the shock will oscillate slightly iun the unsteady solution
+    assert cumRhoError  < tol
+    assert cumMomError  < tol
+    assert cumEnError   < tol
+    
+
     
