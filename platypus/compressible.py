@@ -6,7 +6,28 @@ for flux calculations for a simple 1D finite volume code.
 import math
 import numpy as np
 
+def densityRatioShock(M,gamma):
+    """Returns density ratio across a normal shock.
+    
+    Args:
+        M : Mach number of flow entering shock
+        gamma: ratio of specific heats
+    Returns:
+        rho_s/rho
+    """
+    return ((gamma+1.)*M**2.)/(2.+(gamma-1.)*M**2.)
 
+    
+def pressureRatioShock(M,gamma):
+    """Returns  static pressure ratio across a normal shock.
+    
+    Args:
+        M : Mach number of flow entering shock
+        gamma: ratio of specific heats
+    Returns:
+        p_s/p
+    """
+    return 1. + (2.*(gamma))*(M**2.-1.)/(gamma+1.)
 def getGasProperties(gasIdent):
     """Returns standard gas properties.
     
@@ -214,7 +235,7 @@ class FiniteVolumeSolver1D:
         if source == None:
             #We define a blank source
             def zeroSource(state,wv,vol,index):
-                return np.zeros(wv.shape[0])
+                return np.zeros(state.shape[0])
             self.source = zeroSource
         else:
             self.source = source
@@ -252,9 +273,9 @@ class FiniteVolumeSolver1D:
             dist (float): distance between the two surfaces
         """
         
-        factor = (math.sqrt(area2)-math.sqrt(area1))/dist
+        factor =  (1./dist)*(math.sqrt(area2)/math.sqrt(area1)-1.)
         
-        vol = (1./(3.*factor))*(area2**1.5 - area1**1.5)
+        vol = area1*(dist + factor*dist**2. + ((factor**2.)/3.)*dist**3.)
         
         return vol
         
@@ -288,8 +309,7 @@ class FiniteVolumeSolver1D:
                                                          self.workingVariables[:,self.nCells-1])
         
         #Working variables have been computed so we calculate the delta t using the maximum max characteristic speed
-        CFL = deltaT*maxChicSpeed/cellWidth
-        
+
         deltaT = min(deltaT,CFL*self.cellWidth/maxChicSpeed)
         
         #We now compute the fluxes
@@ -299,15 +319,15 @@ class FiniteVolumeSolver1D:
                 ARhs    = self.calcMidArea(self.areas[i],self.areas[i+1]) #We calculate the area of the flux plane on the right hand side
                 volRhs  = self.calcVolume(self.areas[i],ARhs,0.5*cw)
             else:
-                ARhs    = areas[i]
-                volRhs  = 0.5*cw*areas[i]
+                ARhs    = self.areas[i]
+                volRhs  = 0.5*cw*self.areas[i]
             
             if i != 0:
                 ALhs    = self.calcMidArea(self.areas[i-1],self.areas[i]) 
                 volLhs  = self.calcVolume(ALhs,self.areas[i],0.5*cw)
             else:
-                ALhs    = areas[i]
-                volLhs  = 0.5*cw*areas[i]
+                ALhs    = self.areas[i]
+                volLhs  = 0.5*cw*self.areas[i]
                 
             vol = volLhs + volRhs   #We construct the volume
             source = self.source(self.states[:,i],self.workingVariables[:,i],vol,i) # We apply any source term
@@ -319,8 +339,8 @@ class FiniteVolumeSolver1D:
         self.states += self.stateUpdates*deltaT
         
         #We call an update function
-        
-        self.update(self)   #This allows the update function to do whatever it wants 
+        if self.updateFunc != None:
+            self.updateFunc(self)   #This allows the update function to do whatever it wants 
         
         return deltaT
             
