@@ -16,6 +16,18 @@ To install use:
 pip install git+https://github.com/cuspaceflight/platypus.git
 ```
 
+# Validation
+
+To perform validation of the solver a validation suite is present and can be run through:
+
+```
+tox
+```
+
+This tests the various flow relationships implemented in the helper functions as well as 
+validating the 1D finite volume solver against the analytic solutions of Sod's shock tube and
+a flow through a nozzle.
+
 # Project goals
 
 The current simulation tool used by CUSF for motor simulation uses a quasi-steady process, treating the

@@ -1,0 +1,7 @@
+# This file lists additional packages, beyond those listed in setup.py, which
+# need to be installed to run the test suite.
+#
+# It is not the file to list general requirements for the software. (I.e.
+# packages which need to be installed to run the software.)
+#
+pytest-cov
