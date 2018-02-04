@@ -1,6 +1,10 @@
 Platypus
 ==========
 
+[![Build Status](https://travis-ci.org/cuspaceflight/platypus.svg?branch=master)](https://travis-ci.org/cuspaceflight/platypus)
+[![Coverage Status](https://coveralls.io/repos/github/cuspaceflight/platypus/badge.svg?branch=master)](https://coveralls.io/github/cuspaceflight/platypus?branch=master)
+
+
 The aim of platypus is to develop a robust simulation tool for hybrid rocket motors that aims to 
 capture some of the unsteady dynamics within the motor. This should allow greater insight into potential
 transients during motor start-up as well and potential instabilities of the motor.
