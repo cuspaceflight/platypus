@@ -1,0 +1,14 @@
+language: python
+
+matrix:
+  include:
+    - python: 2.7
+      env: TOX_ENV=py27-test
+dist: trusty
+sudo: true
+install:
+  - provision/travis/install.sh
+  - pip install -r provision/travis/requirements.txt
+script: provision/travis/run-tests.sh
+after_success:
+  - coveralls
